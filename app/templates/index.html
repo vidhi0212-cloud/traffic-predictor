@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Traffic Predictor</title>
+
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBWz8FvOq4Azo2QZujcxQFMzJrfoa2TmsY&libraries=places,geometry"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+
+<style>
+body { margin:0; font-family:Arial; background:#0f172a; color:white; }
+.container { display:flex; height:100vh; }
+#map { width:60%; height:100%; }
+.panel { width:40%; padding:20px; background:#1e293b; overflow-y:auto; }
+.card { background:#334155; padding:15px; border-radius:10px; margin-bottom:15px; }
+input, select { width:100%; padding:8px; margin:5px 0; border-radius:6px; border:none; }
+button { background:#22c55e; color:white; padding:10px; border:none; border-radius:6px; cursor:pointer; margin:5px 0; }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<div id="map"></div>
+
+<div class="panel">
+
+<!-- PAGE 1 -->
+<div id="page1">
+<div class="card">
+<h2>🚦 Traffic Predictor</h2>
+
+<label>Time To Reach</label>
+<select id="hour"></select>
+
+<label>Date</label>
+<input type="date" id="date">
+
+<label>Source</label>
+<input id="source">
+
+<label>Destination</label>
+<input id="destination">
+
+<button onclick="predict()">Predict</button>
+</div>
+</div>
+
+<!-- PAGE 2 -->
+<div id="page2" style="display:none;">
+<div class="card" style="text-align:center;">
+
+<h2>🚦 Route Predictions</h2>
+
+<!-- ROUTE SWITCH -->
+<div>
+<button onclick="selectRoute(0)">Route 1</button>
+<button onclick="selectRoute(1)">Route 2</button>
+<button onclick="selectRoute(2)">Route 3</button>
+</div>
+
+<h1 id="trafficText"></h1>
+<div id="emoji" style="font-size:35px;"></div>
+
+<p id="result"></p>
+<p id="weatherBox"></p>
+
+<button onclick="showGraph()">📊 View Graph</button>
+
+</div>
+</div>
+
+<!-- PAGE 3 -->
+<div id="page3" style="display:none;">
+<div class="card">
+<h2>📈 Traffic Graph</h2>
+<canvas id="chart"></canvas>
+<p id="bestTime"></p>
+<button onclick="showPage('page1')">⬅ Back</button>
+</div>
+</div>
+
+</div>
+</div>
+
+<script>
+
+let map;
+let polylines = [];
+let chart;
+let allRoutes = [];
+
+// INIT
+function initMap(){
+    map = new google.maps.Map(document.getElementById("map"), {
+        center:{lat:23.0225,lng:72.5714}, zoom:12
+    });
+
+    new google.maps.places.Autocomplete(document.getElementById("source"));
+    new google.maps.places.Autocomplete(document.getElementById("destination"));
+
+    for(let i=0;i<24;i++){
+        let opt=document.createElement("option");
+        opt.value=i; opt.text=i+":00";
+        hour.appendChild(opt);
+    }
+}
+window.onload = initMap;
+
+// PAGE SWITCH
+function showPage(p){
+    ["page1","page2","page3"].forEach(x=>document.getElementById(x).style.display="none");
+    document.getElementById(p).style.display="block";
+}
+
+// 🚀 PREDICT
+function predict(){
+
+    const d=new Date(date.value);
+
+    fetch("/predict",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            hour:hour.value,
+            day:d.getDate(),
+            month:d.getMonth()+1,
+            source:source.value,
+            destination:destination.value
+        })
+    })
+    .then(r=>r.json())
+    .then(data=>{
+
+        allRoutes = data.routes;
+
+        updateRouteUI(0);
+        drawRouteColored(allRoutes[0].steps);
+
+        showPage("page2");
+    });
+}
+
+// 🎯 UPDATE UI
+function updateRouteUI(i){
+
+    let r = allRoutes[i];
+
+    let traffic="Low", emoji="🟢", color="lightgreen";
+
+    if(r.time > r.base_time*1.7){ traffic="High"; emoji="🔴"; color="red"; }
+    else if(r.time > r.base_time*1.2){ traffic="Medium"; emoji="🟡"; color="yellow"; }
+
+    trafficText.innerText = traffic + " Traffic";
+    trafficText.style.color = color;
+    emoji.innerText = emoji;
+
+    result.innerText =
+    `⏱ ${r.time.toFixed(1)} mins
+📏 ${r.distance} km`;
+
+    weatherBox.innerText =
+    `🌦 ${r.weather}
+🌡 ${r.temp.toFixed(1)}°C
+🌧 ${r.rain} mm`;
+}
+
+// 🗺️ DRAW
+function drawRouteColored(steps){
+
+    polylines.forEach(l=>l.setMap(null));
+    polylines=[];
+
+    let bounds=new google.maps.LatLngBounds();
+
+    steps.forEach(step=>{
+        let path=google.maps.geometry.encoding.decodePath(step.polyline);
+        path.forEach(p=>bounds.extend(p));
+
+        let line=new google.maps.Polyline({
+            path:path,
+            strokeColor:step.color,
+            strokeWeight:5,
+            map:map
+        });
+
+        polylines.push(line);
+    });
+
+    new google.maps.Marker({position:steps[0].start,map:map,label:"S"});
+    new google.maps.Marker({position:steps[steps.length-1].end,map:map,label:"E"});
+
+    map.fitBounds(bounds);
+}
+
+// SWITCH ROUTE
+function selectRoute(i){
+    if(!allRoutes[i]) return;
+    updateRouteUI(i);
+    drawRouteColored(allRoutes[i].steps);
+}
+
+// GRAPH
+function showGraph(){
+
+    const d=new Date(date.value);
+
+    fetch("/predict_day",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            day:d.getDate(),
+            month:d.getMonth()+1,
+            source:source.value,
+            destination:destination.value,
+            hour:hour.value
+        })
+    })
+    .then(r=>r.json())
+    .then(data=>{
+
+        if(chart) chart.destroy();
+
+        const ctx = document.getElementById("chart").getContext("2d");
+
+        chart = new Chart(ctx, {
+            type:"line",
+            data:{
+                labels:data.hours,
+                datasets:[{
+                    label:"Congestion %",
+                    data:data.congestion,
+                    borderColor:"red",
+                    fill:true
+                }]
+            },
+            options:{
+                plugins:{
+                    zoom:{
+                        zoom:{wheel:{enabled:true},mode:'x'},
+                        pan:{enabled:true,mode:'x'}
+                    }
+                }
+            }
+        });
+
+        bestTime.innerText="🟢 Best Time: "+data.best_hour+":00";
+
+        showPage("page3");
+    });
+}
+
+</script>
+</body>
+</html>
